@@ -1,4 +1,6 @@
 import lightning as L
+import yaml
+import argparse
 from lightning.pytorch.loggers import WandbLogger
 from ray.tune.integration.pytorch_lightning import TuneReportCheckpointCallback
 from ray import tune
@@ -8,27 +10,6 @@ import ray
 from ray.tune import CLIReporter
 from ray.tune.search.optuna import OptunaSearch
 from ray.tune.schedulers import ASHAScheduler
-
-
-EPOCHS = 100
-TOTAL_SAMPLES = 10  # Total hyperparameter configurations to try
-CONCURRENT_TRIALS = 1
-PARAM_GRID = {
-    "model": tune.choice(['cnn', 'vit']),
-    "learning_rate": tune.choice([1e-3, 1e-4]),
-    "batch_size": tune.choice([16, 32]),
-    # "epochs": tune.choice([10, 50, 100]),
-    
-    "model_depth": tune.choice([2, 3, 4]), #CNN only
-    "kernel_size": tune.choice([3, 5]), #CNN only
-    "latent_dim": tune.choice([16, 32, 64]), #CNN only
-    "stride": tune.choice([1]), #CNN only
-    "padding": tune.choice(['same']), #CNN only
-}
-
-DATA_DIR = "/data/malio/softsys/imgs_data" # absolute path to avoid ray issues
-IMAGE_SIZE = (660, 4800)    # All images will be resized/padded to this size, (660, 4800) is the original size
-WANDB_PROJECT_NAME = "SoftSystem_Image_Grid_Search"
 
 def show_images(datamodule):
     import matplotlib.pyplot as plt
@@ -55,11 +36,11 @@ def show_images(datamodule):
             plt.show()
     input("Press Enter to continue...")
 
-def train_model(config):
+def train_model(config, epochs, data_dir, image_size, wandb_project_name):
     datamodule = ImageDataModule(
-        data_dir=DATA_DIR,
+        data_dir=data_dir,
         batch_size=config['batch_size'],
-        image_size=IMAGE_SIZE
+        image_size=tuple(image_size)
     )
     datamodule.setup(verbose=True) # for num classes
     
@@ -67,7 +48,7 @@ def train_model(config):
         model_config = {
             'name': 'cnn',
             'params': {
-                'img_size': IMAGE_SIZE,
+                'img_size': tuple(image_size),
                 'depth': config['model_depth'],
                 'kernel_size': config['kernel_size'],
                 'stride': config['stride'],
@@ -89,10 +70,10 @@ def train_model(config):
         learning_rate=config['learning_rate']
     )
     
-    logger = WandbLogger(project=WANDB_PROJECT_NAME, config=config, log_model='all')
+    logger = WandbLogger(project=wandb_project_name, config=config, log_model='all')
     
     trainer = L.Trainer(
-        max_epochs=EPOCHS,
+        max_epochs=epochs,
         accelerator='auto',
         devices="auto",
         log_every_n_steps=10,
@@ -110,44 +91,42 @@ def train_model(config):
     )
     trainer.fit(lit_model, datamodule)
 
-if __name__ == '__main__':
+def main(config):
+    # Construct the search space for Ray Tune from the config file
+    param_grid = {}
+    for key, value in config['param_grid'].items():
+        if value['tune_type'] == 'choice':
+            param_grid[key] = tune.choice(value['values'])
+        # Add other tune types like uniform, loguniform, etc. as needed
+        # elif value['tune_type'] == 'uniform':
+        #     param_grid[key] = tune.uniform(value['min'], value['max'])
+
     ray.init(
         ignore_reinit_error=True,
         runtime_env={
             "excludes": [
-                "*.h5",
-                "*.hdf5",
-                # "*.pkl",
-                "*.pth",
-                "*.ckpt",
-                "*.zip",
-                "*.tar",
-                "*.tar.gz",
-                "data/",
-                "datasets/",
-                "models/",
-                "checkpoints/",
-                "logs/",
-                "tmp/",
-                "ray_results/",
-                "wandb/",
-                ".git/",
-                "__pycache__/",
-                "*.pyc",
-                ".ipynb_checkpoints/",
-                "*.mp4",
-                "*.avi",
-                "*.mov",
+                "*.h5", "*.hdf5", "*.pth", "*.ckpt", "*.zip", "*.tar", "*.tar.gz",
+                "data/", "datasets/", "models/", "checkpoints/", "logs/", "tmp/",
+                "ray_results/", "wandb/", ".git/", "__pycache__/", "*.pyc",
+                ".ipynb_checkpoints/", "*.mp4", "*.avi", "*.mov",
             ]
         })
     
-    scheduler = ASHAScheduler(max_t=EPOCHS,
+    scheduler = ASHAScheduler(max_t=config['epochs'],
                               grace_period=1,
                               reduction_factor=2,
                               metric="f1_score",
                               mode="max")
 
-    train_fn_with_resources = tune.with_resources(train_model, 
+    trainable_with_params = tune.with_parameters(
+        train_model,
+        epochs=config['epochs'],
+        data_dir=config['data_dir'],
+        image_size=config['image_size'],
+        wandb_project_name=config['wandb_project_name']
+    )
+
+    train_fn_with_resources = tune.with_resources(trainable_with_params, 
                                                   resources={"CPU": 1, "GPU": 1})
     
     search_alg = OptunaSearch(
@@ -157,12 +136,12 @@ if __name__ == '__main__':
 
     tuner = tune.Tuner(
         train_fn_with_resources,
-        param_space=PARAM_GRID,
+        param_space=param_grid,
         tune_config=tune.TuneConfig(
             search_alg=search_alg,
             scheduler=scheduler,
-            num_samples=TOTAL_SAMPLES,
-            max_concurrent_trials=CONCURRENT_TRIALS,
+            num_samples=config['total_samples'],
+            max_concurrent_trials=config['concurrent_trials'],
         ),
         run_config=tune.RunConfig(
             checkpoint_config=tune.CheckpointConfig(
@@ -176,4 +155,15 @@ if __name__ == '__main__':
     )
     results = tuner.fit()
     print("Best hyperparameters found were:")
-    print(results.get_best_results(metric="f1_score", mode="max"))
+    print(results.get_best_result(metric="f1_score", mode="max"))
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="Run hyperparameter tuning for image classification.")
+    parser.add_argument('--config', type=str, default='config.yaml',
+                        help='Path to the configuration YAML file.')
+    args = parser.parse_args()
+
+    with open(args.config, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    main(config)
