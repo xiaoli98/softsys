@@ -1,9 +1,9 @@
 import torch
-import pytorch_lightning as pl
+import lightning as L
 from torchmetrics.functional import accuracy, f1_score
 from models import ConfigurableCNN, VisionTransformer
 
-class LitClassifier(pl.LightningModule):
+class LitClassifier(L.LightningModule):
     def __init__(self, model_config, num_classes, learning_rate=1e-3):
         super().__init__()
         self.save_hyperparameters()

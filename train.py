@@ -1,25 +1,33 @@
-import itertools
-import pytorch_lightning as pl
-from pytorch_lightning.loggers import WandbLogger
-import wandb
+import lightning as L
+from lightning.pytorch.loggers import WandbLogger
+from ray.tune.integration.pytorch_lightning import TuneReportCheckpointCallback
+from ray import tune
 from datamodule import ImageDataModule
 from lit_system import LitClassifier
+import ray
+from ray.tune import CLIReporter
+from ray.tune.search.optuna import OptunaSearch
+from ray.tune.schedulers import ASHAScheduler
 
+
+EPOCHS = 100
+TOTAL_SAMPLES = 10  # Total hyperparameter configurations to try
+CONCURRENT_TRIALS = 1
 PARAM_GRID = {
-    'model': ['cnn', 'vit'],
-    'learning_rate': [1e-3, 1e-4],
-    'batch_size': [16, 32],
-    'epochs': [10, 50, 100],
-    'model_depth': [2, 3, 4],           # CNN only
-    'kernel_size': [3, 5],           # CNN only
-    'latent_dim': [64, 128, 256],        # CNN only
-
-    'stride': [1],                   # CNN only
-    'padding': ['same'],             # CNN only
+    "model": tune.choice(['cnn', 'vit']),
+    "learning_rate": tune.choice([1e-3, 1e-4]),
+    "batch_size": tune.choice([16, 32]),
+    # "epochs": tune.choice([10, 50, 100]),
+    
+    "model_depth": tune.choice([2, 3, 4]), #CNN only
+    "kernel_size": tune.choice([3, 5]), #CNN only
+    "latent_dim": tune.choice([16, 32, 64]), #CNN only
+    "stride": tune.choice([1]), #CNN only
+    "padding": tune.choice(['same']), #CNN only
 }
 
-DATA_DIR = "./imgs_data"
-IMAGE_SIZE = 660    # All images will be resized/padded to this size
+DATA_DIR = "/data/malio/softsys/imgs_data" # absolute path to avoid ray issues
+IMAGE_SIZE = (660, 4800)    # All images will be resized/padded to this size, (660, 4800) is the original size
 WANDB_PROJECT_NAME = "SoftSystem_Image_Grid_Search"
 
 def show_images(datamodule):
@@ -47,81 +55,125 @@ def show_images(datamodule):
             plt.show()
     input("Press Enter to continue...")
 
-def main():
-    # TODO use wandb sweep for more advanced control
-    keys, values = zip(*PARAM_GRID.items())
-    run_configs = [dict(zip(keys, v)) for v in itertools.product(*values)]
-
-    print(f"--- Starting Grid Search with {len(run_configs)} combinations ---")
-
-    for i, config in enumerate(run_configs):
-        # Skip combinations that are not applicable (e.g., CNN params for ViT model)
-        if config['model'] == 'vit' and any(k in config for k in ['model_depth', 'kernel_size', 'latent_dim']):
-            # A simple way to avoid redundant ViT runs. 
-            # We will run ViT only once per lr/batch_size/epochs combination.
-            if config['model_depth'] != PARAM_GRID['model_depth'][0] or \
-                config['kernel_size'] != PARAM_GRID['kernel_size'][0] or \
-                config['latent_dim'] != PARAM_GRID['latent_dim'][0]:
-                print(f"Skipping redundant ViT config: {config}")
-                continue
-        
-        print(f"\n--- RUN {i+1}/{len(run_configs)} ---")
-        print(f"Config: {config}")
-
-        wandb_logger = WandbLogger(
-            project=WANDB_PROJECT_NAME,
-            config=config,
-            job_type='train',
-            group=f"model_{config['model']}"
-        )
-        
-        datamodule = ImageDataModule(
-            data_dir=DATA_DIR,
-            batch_size=config['batch_size'],
-            image_size=IMAGE_SIZE
-        )
-        datamodule.setup() # for num classes
-        # show_images(datamodule) # Uncomment to visualize some images
-        
-        if config['model'] == 'cnn':
-            model_config = {
-                'name': 'cnn',
-                'params': {
-                    'img_size': IMAGE_SIZE,
-                    'depth': config['model_depth'],
-                    'kernel_size': config['kernel_size'],
-                    'stride': config['stride'],
-                    'padding': config['padding'],
-                    'latent_dim': config['latent_dim']
-                }
+def train_model(config):
+    datamodule = ImageDataModule(
+        data_dir=DATA_DIR,
+        batch_size=config['batch_size'],
+        image_size=IMAGE_SIZE
+    )
+    datamodule.setup(verbose=True) # for num classes
+    
+    if config['model'] == 'cnn':
+        model_config = {
+            'name': 'cnn',
+            'params': {
+                'img_size': IMAGE_SIZE,
+                'depth': config['model_depth'],
+                'kernel_size': config['kernel_size'],
+                'stride': config['stride'],
+                'padding': config['padding'],
+                'latent_dim': config['latent_dim']
             }
-        elif config['model'] == 'vit':
-            model_config = {
-                'name': 'vit',
-                'params': {
-                    'pretrained': True # Using pretrained ViT
-                }
+        }
+    elif config['model'] == 'vit':
+        model_config = {
+            'name': 'vit',
+            'params': {
+                'pretrained': True # Using pretrained ViT
             }
+        }
 
-        lit_model = LitClassifier(
-            model_config=model_config,
-            num_classes=datamodule.num_classes,
-            learning_rate=config['learning_rate']
-        )
-        
-        trainer = pl.Trainer(
-            max_epochs=config['epochs'],
-            logger=wandb_logger,
-            accelerator='auto',
-            devices=[0],
-            log_every_n_steps=10,
-            callbacks=[pl.callbacks.TQDMProgressBar(refresh_rate=10)]
-        )
-
-        trainer.fit(lit_model, datamodule)
-        trainer.test(lit_model, datamodule)
-        
-        wandb.finish()
+    lit_model = LitClassifier(
+        model_config=model_config,
+        num_classes=datamodule.num_classes,
+        learning_rate=config['learning_rate']
+    )
+    
+    logger = WandbLogger(project=WANDB_PROJECT_NAME, config=config, log_model='all')
+    
+    trainer = L.Trainer(
+        max_epochs=EPOCHS,
+        accelerator='auto',
+        devices="auto",
+        log_every_n_steps=10,
+        logger=logger,
+        enable_progress_bar=True,
+        callbacks=[TuneReportCheckpointCallback(
+            {
+                "loss": "val_loss",
+                "mean_accuracy": "val_accuracy",
+                "f1_score": "val_f1_score"
+            },
+            save_checkpoints=False,
+            on="validation_end"
+        )]
+    )
+    trainer.fit(lit_model, datamodule)
 
 if __name__ == '__main__':
-    main()
+    ray.init(
+        ignore_reinit_error=True,
+        runtime_env={
+            "excludes": [
+                "*.h5",
+                "*.hdf5",
+                # "*.pkl",
+                "*.pth",
+                "*.ckpt",
+                "*.zip",
+                "*.tar",
+                "*.tar.gz",
+                "data/",
+                "datasets/",
+                "models/",
+                "checkpoints/",
+                "logs/",
+                "tmp/",
+                "ray_results/",
+                "wandb/",
+                ".git/",
+                "__pycache__/",
+                "*.pyc",
+                ".ipynb_checkpoints/",
+                "*.mp4",
+                "*.avi",
+                "*.mov",
+            ]
+        })
+    
+    scheduler = ASHAScheduler(max_t=EPOCHS,
+                              grace_period=1,
+                              reduction_factor=2,
+                              metric="f1_score",
+                              mode="max")
+
+    train_fn_with_resources = tune.with_resources(train_model, 
+                                                  resources={"CPU": 1, "GPU": 1})
+    
+    search_alg = OptunaSearch(
+        metric="f1_score",
+        mode="max"
+    )
+
+    tuner = tune.Tuner(
+        train_fn_with_resources,
+        param_space=PARAM_GRID,
+        tune_config=tune.TuneConfig(
+            search_alg=search_alg,
+            scheduler=scheduler,
+            num_samples=TOTAL_SAMPLES,
+            max_concurrent_trials=CONCURRENT_TRIALS,
+        ),
+        run_config=tune.RunConfig(
+            checkpoint_config=tune.CheckpointConfig(
+                num_to_keep=2,
+                checkpoint_score_attribute="f1_score",
+                checkpoint_score_order="max",
+            ),
+            name="softsys_image_classification",
+            storage_path="/data/malio/ray_tmp/ray_results",
+        ),
+    )
+    results = tuner.fit()
+    print("Best hyperparameters found were:")
+    print(results.get_best_results(metric="f1_score", mode="max"))

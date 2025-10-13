@@ -7,7 +7,9 @@ import torchvision.transforms as T
 
 class ResizeAndPad:
     def __init__(self, output_size, fill=0):
-        self.output_size = output_size
+        assert len(output_size) == 2, "Output size must be a tuple of (height, width)"
+        self.height = output_size[0]
+        self.width = output_size[1]
         if isinstance(fill, int):
             self.fill = (fill, fill, fill)
         else:
@@ -17,13 +19,13 @@ class ResizeAndPad:
         if isinstance(img, torch.Tensor):
             img = img.permute(1, 2, 0).cpu().numpy()
         h, w = img.shape[:2]
-        scale = min(self.output_size / h, self.output_size / w)
+        scale = min(self.height / h, self.width / w)
         new_w, new_h = int(round(w * scale)), int(round(h * scale))
         resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_LINEAR)
 
-        canvas = np.full((self.output_size, self.output_size, 3), self.fill, dtype=resized.dtype)
-        y_off = (self.output_size - new_h) // 2
-        x_off = (self.output_size - new_w) // 2
+        canvas = np.full((self.height, self.width, 3), self.fill, dtype=resized.dtype)
+        y_off = (self.height - new_h) // 2
+        x_off = (self.width - new_w) // 2
         canvas[y_off:y_off + new_h, x_off:x_off + new_w] = resized
         return canvas
 
@@ -42,7 +44,8 @@ class SobelFilter:
         return magnitude
 
 class ImageFileDataset(Dataset):
-    def __init__(self, data_dir, image_size=None):
+    def __init__(self, data_dir, image_size, sobel=False):
+        assert len(image_size) == 2, "image_size must be a tuple of (height, width)"
         self.data_dir = data_dir
         self.image_files = [f for f in os.listdir(data_dir) if os.path.isfile(os.path.join(data_dir, f))]
         self.samples = []
@@ -50,7 +53,7 @@ class ImageFileDataset(Dataset):
         self.num_classes = 0
         self._parse_files()
         self.transform = T.Compose([
-            SobelFilter(),
+            SobelFilter() if sobel else T.Lambda(lambda x: x),
             ResizeAndPad(image_size) if image_size else T.Lambda(lambda x: x),
             T.ToTensor(),  # Converts HWC uint8 [0,255] to CHW float [0,1]
             T.Normalize(mean=[0.485, 0.456, 0.406],

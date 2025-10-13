@@ -32,7 +32,7 @@ class ConfigurableCNN(nn.Module):
         
         # calculate the flattened size
         with torch.no_grad():
-            dummy_input = torch.randn(1, 3, img_size, img_size)
+            dummy_input = torch.randn(1, 3, *img_size)
             dummy_output = self.feature_extractor(dummy_input)
             flattened_size = dummy_output.view(1, -1).shape[1]
 
