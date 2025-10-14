@@ -2,12 +2,12 @@ import lightning as L
 import yaml
 import argparse
 from lightning.pytorch.loggers import WandbLogger
-from ray.tune.integration.pytorch_lightning import TuneReportCheckpointCallback
 from ray import tune
 from datamodule import ImageDataModule
 from lit_system import LitClassifier
 import ray
 from ray.tune import CLIReporter
+from ray.tune.integration.pytorch_lightning import TuneReportCheckpointCallback
 from ray.tune.search.optuna import OptunaSearch
 from ray.tune.schedulers import ASHAScheduler
 
@@ -36,11 +36,13 @@ def show_images(datamodule):
             plt.show()
     input("Press Enter to continue...")
 
-def train_model(config, epochs, data_dir, image_size, wandb_project_name):
+def train_model(config, data_config, epochs, data_dir, image_size, wandb_project_name, run_name):
+    data_config = data_config
     datamodule = ImageDataModule(
         data_dir=data_dir,
         batch_size=config['batch_size'],
-        image_size=tuple(image_size)
+        image_size=tuple(image_size),
+        sobel=data_config.get('sobel', False)
     )
     datamodule.setup(verbose=True) # for num classes
     
@@ -53,14 +55,16 @@ def train_model(config, epochs, data_dir, image_size, wandb_project_name):
                 'kernel_size': config['kernel_size'],
                 'stride': config['stride'],
                 'padding': config['padding'],
-                'latent_dim': config['latent_dim']
+                'latent_dim': config['latent_dim'],
+                'use_contrastive': config.get('use_contrastive', False),
             }
         }
     elif config['model'] == 'vit':
         model_config = {
             'name': 'vit',
             'params': {
-                'pretrained': True # Using pretrained ViT
+                'pretrained': True, # Using pretrained ViT
+                "use_contrastive": config.get('use_contrastive', False),
             }
         }
 
@@ -69,26 +73,36 @@ def train_model(config, epochs, data_dir, image_size, wandb_project_name):
         num_classes=datamodule.num_classes,
         learning_rate=config['learning_rate']
     )
-    
-    logger = WandbLogger(project=wandb_project_name, config=config, log_model='all')
-    
+
+    logger = WandbLogger(project=wandb_project_name, name=run_name, config=config, log_model=True)
+
     trainer = L.Trainer(
         max_epochs=epochs,
         accelerator='auto',
         devices="auto",
         log_every_n_steps=10,
         logger=logger,
-        enable_progress_bar=True,
-        callbacks=[TuneReportCheckpointCallback(
-            {
-                "loss": "val_loss",
-                "mean_accuracy": "val_accuracy",
-                "f1_score": "val_f1_score"
-            },
-            save_checkpoints=False,
-            on="validation_end"
-        )]
-    )
+        enable_progress_bar=False,
+        callbacks=[
+            TuneReportCheckpointCallback(
+                {
+                    "loss": "val_loss",
+                    "mean_accuracy": "val_accuracy",
+                    "f1_score": "val_f1_score"
+                },
+                save_checkpoints=True,
+                on="validation_end"
+            ),
+            L.pytorch.callbacks.ModelCheckpoint(
+                dirpath="/data/malio/softsys/checkpoints",
+                filename=f"model-{config['model']}-" + "{epoch:02d}-{val_loss:.2f}",
+                monitor="val_loss",
+                mode="min",
+                save_top_k=2,
+                save_last=False 
+            ),
+            ]
+    )   
     trainer.fit(lit_model, datamodule)
 
 def main(config):
@@ -113,17 +127,19 @@ def main(config):
         })
     
     scheduler = ASHAScheduler(max_t=config['epochs'],
-                              grace_period=1,
+                              grace_period=5,
                               reduction_factor=2,
                               metric="f1_score",
                               mode="max")
 
     trainable_with_params = tune.with_parameters(
         train_model,
+        data_config=config.get('dataset', {}),
         epochs=config['epochs'],
         data_dir=config['data_dir'],
         image_size=config['image_size'],
-        wandb_project_name=config['wandb_project_name']
+        wandb_project_name=config['wandb_project_name'],
+        run_name=config['run_name']
     )
 
     train_fn_with_resources = tune.with_resources(trainable_with_params, 

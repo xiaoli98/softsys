@@ -3,15 +3,16 @@ from torch.utils.data import DataLoader, random_split
 from dataset import ImageFileDataset
 
 class ImageDataModule(L.LightningDataModule):
-    def __init__(self, data_dir, batch_size, image_size, num_workers=4):
+    def __init__(self, data_dir, batch_size, image_size, num_workers=4, sobel=False):
         super().__init__()
         self.data_dir = data_dir
         self.batch_size = batch_size
         self.image_size = image_size
         self.num_workers = num_workers
+        self.sobel = sobel
         
     def setup(self, stage=None, verbose=False):
-        full_dataset = ImageFileDataset(self.data_dir, image_size=self.image_size)
+        full_dataset = ImageFileDataset(self.data_dir, image_size=self.image_size, sobel=self.sobel)
         self.num_classes = full_dataset.num_classes
         
         # Split data

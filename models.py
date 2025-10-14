@@ -8,13 +8,16 @@ class ConfigurableCNN(nn.Module):
         self,
         num_classes,
         img_size,
-        in_channels=3,
+        in_channels=1,
         depth=3,
         kernel_size=3,
         stride=1,
         padding='same',
-        latent_dim=128):
+        latent_dim=128,
+        use_contrastive=False,
+        projection_dim=128):
         super().__init__()
+        self.use_contrastive = use_contrastive
         layers = []
         
         current_channels = 32
@@ -32,34 +35,82 @@ class ConfigurableCNN(nn.Module):
         
         # calculate the flattened size
         with torch.no_grad():
-            dummy_input = torch.randn(1, 3, *img_size)
+            dummy_input = torch.randn(1, 1, *img_size)
             dummy_output = self.feature_extractor(dummy_input)
             flattened_size = dummy_output.view(1, -1).shape[1]
 
-        self.classifier = nn.Sequential(
+        self.classifier_backbone = nn.Sequential(
             nn.Flatten(),
             nn.Linear(flattened_size, latent_dim),
             nn.ReLU(),
             nn.Dropout(0.5),
-            nn.Linear(latent_dim, num_classes)
         )
+        self.classifier_head = nn.Linear(latent_dim, num_classes)
+
+        # Conditionally create the projection head
+        if self.use_contrastive:
+            self.projection_head = nn.Sequential(
+                nn.Linear(latent_dim, latent_dim),
+                nn.ReLU(inplace=True),
+                nn.Linear(latent_dim, projection_dim)
+            )
 
     def forward(self, x):
         x = self.feature_extractor(x)
-        x = self.classifier(x)
-        return x
+        features = self.classifier_backbone(x)
+        logits = self.classifier_head(features)
+        logits = F.softmax(logits, dim=1)
+        
+        # Return projections only if the head exists and is requested
+        if self.use_contrastive:
+            projections = self.projection_head(features)
+            return logits, F.normalize(projections, dim=1)
+        
+        return logits
 
 class VisionTransformer(nn.Module):
-    def __init__(self, num_classes, latent_dim=768, pretrained=True):
+    def __init__(self, num_classes, latent_dim=768, pretrained=True, use_contrastive=False, projection_dim=128): # <-- Add flag
         super().__init__()
-        # Note: 'latent_dim' for ViT is typically its embedding dimension, which is fixed for pretrained models.
-        # We will use the standard ViT-B/16 model. `latent_dim` here is more of a placeholder.
+        self.use_contrastive = use_contrastive
         weights = ViT_B_16_Weights.IMAGENET1K_V1 if pretrained else None
         self.vit = vit_b_16(weights=weights)
 
-        # Replace the final classification head
+        # Modify the patch embedding layer to accept 1 channel instead of 3
+        original_conv_proj = self.vit.conv_proj
+        self.vit.conv_proj = nn.Conv2d(
+            in_channels=1,
+            out_channels=original_conv_proj.out_channels,
+            kernel_size=original_conv_proj.kernel_size,
+            stride=original_conv_proj.stride,
+            padding=original_conv_proj.padding,
+            bias=original_conv_proj.bias is not None
+        )
+        # Note: The weights for this new conv_proj layer will be randomly initialized.
+
         original_in_features = self.vit.heads.head.in_features
         self.vit.heads.head = nn.Linear(original_in_features, num_classes)
         
+        # Conditionally create the projection head
+        if self.use_contrastive:
+            self.projection_head = nn.Sequential(
+                nn.Linear(original_in_features, original_in_features),
+                nn.ReLU(inplace=True),
+                nn.Linear(original_in_features, projection_dim)
+            )
+        
     def forward(self, x):
-        return self.vit(x)
+        features = self.vit._process_input(x)
+        n = features.shape[0]
+        batch_class_token = self.vit.class_token.expand(n, -1, -1)
+        features = torch.cat([batch_class_token, features], dim=1)
+        features = self.vit.encoder(features)
+        features = features[:, 0]
+
+        logits = self.vit.heads(features)
+
+        # Return projections only if the head exists and is requested
+        if self.use_contrastive:
+            projections = self.projection_head(features)
+            return logits, F.normalize(projections, dim=1)
+
+        return logits
