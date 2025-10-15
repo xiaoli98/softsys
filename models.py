@@ -45,7 +45,10 @@ class ConfigurableCNN(nn.Module):
             nn.ReLU(),
             nn.Dropout(0.5),
         )
-        self.classifier_head = nn.Linear(latent_dim, num_classes)
+        if num_classes == 2:
+            self.classifier_head = nn.Linear(latent_dim, 1)
+        else:
+            self.classifier_head = nn.Linear(latent_dim, num_classes)
 
         # Conditionally create the projection head
         if self.use_contrastive:
@@ -59,7 +62,7 @@ class ConfigurableCNN(nn.Module):
         x = self.feature_extractor(x)
         features = self.classifier_backbone(x)
         logits = self.classifier_head(features)
-        logits = F.softmax(logits, dim=1)
+        logits = F.sigmoid(logits)
         
         # Return projections only if the head exists and is requested
         if self.use_contrastive:
@@ -88,8 +91,11 @@ class VisionTransformer(nn.Module):
         # Note: The weights for this new conv_proj layer will be randomly initialized.
 
         original_in_features = self.vit.heads.head.in_features
-        self.vit.heads.head = nn.Linear(original_in_features, num_classes)
-        
+        if num_classes == 2:
+            self.vit.heads.head = nn.Linear(original_in_features, 1)
+        else:
+            self.vit.heads.head = nn.Linear(original_in_features, num_classes)
+
         # Conditionally create the projection head
         if self.use_contrastive:
             self.projection_head = nn.Sequential(
@@ -107,7 +113,7 @@ class VisionTransformer(nn.Module):
         features = features[:, 0]
 
         logits = self.vit.heads(features)
-
+        logits = F.sigmoid(logits)
         # Return projections only if the head exists and is requested
         if self.use_contrastive:
             projections = self.projection_head(features)

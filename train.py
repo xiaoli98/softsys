@@ -42,9 +42,9 @@ def train_model(config, data_config, epochs, data_dir, image_size, wandb_project
         data_dir=data_dir,
         batch_size=config['batch_size'],
         image_size=tuple(image_size),
-        sobel=data_config.get('sobel', False)
+        sobel=data_config.get('sobel', False),
     )
-    datamodule.setup(verbose=True) # for num classes
+    datamodule.setup(verbose=True, contrastive=config.get('use_contrastive', False)) # for num classes
     
     if config['model'] == 'cnn':
         model_config = {
@@ -56,7 +56,6 @@ def train_model(config, data_config, epochs, data_dir, image_size, wandb_project
                 'stride': config['stride'],
                 'padding': config['padding'],
                 'latent_dim': config['latent_dim'],
-                'use_contrastive': config.get('use_contrastive', False),
             }
         }
     elif config['model'] == 'vit':
@@ -64,14 +63,15 @@ def train_model(config, data_config, epochs, data_dir, image_size, wandb_project
             'name': 'vit',
             'params': {
                 'pretrained': True, # Using pretrained ViT
-                "use_contrastive": config.get('use_contrastive', False),
             }
         }
 
     lit_model = LitClassifier(
         model_config=model_config,
         num_classes=datamodule.num_classes,
-        learning_rate=config['learning_rate']
+        learning_rate=config['learning_rate'],
+        use_contrastive=config.get('use_contrastive', False),
+        supcon_weight=config.get('supcon_weight', 0.5)
     )
 
     logger = WandbLogger(project=wandb_project_name, name=run_name, config=config, log_model=True)
@@ -102,8 +102,9 @@ def train_model(config, data_config, epochs, data_dir, image_size, wandb_project
                 save_last=False 
             ),
             ]
-    )   
+    )
     trainer.fit(lit_model, datamodule)
+    wandb.finish()
 
 def main(config):
     # Construct the search space for Ray Tune from the config file
@@ -111,14 +112,13 @@ def main(config):
     for key, value in config['param_grid'].items():
         if value['tune_type'] == 'choice':
             param_grid[key] = tune.choice(value['values'])
-        # Add other tune types like uniform, loguniform, etc. as needed
-        # elif value['tune_type'] == 'uniform':
-        #     param_grid[key] = tune.uniform(value['min'], value['max'])
+        elif value['tune_type'] == 'uniform':
+            param_grid[key] = tune.uniform(value['min'], value['max'])
 
     ray.init(
         ignore_reinit_error=True,
         runtime_env={
-            "excludes": [
+            "excludes": [ # some default excludes
                 "*.h5", "*.hdf5", "*.pth", "*.ckpt", "*.zip", "*.tar", "*.tar.gz",
                 "data/", "datasets/", "models/", "checkpoints/", "logs/", "tmp/",
                 "ray_results/", "wandb/", ".git/", "__pycache__/", "*.pyc",

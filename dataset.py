@@ -53,7 +53,7 @@ class DynamicNormalize:
         return img
 
 class ImageFileDataset(Dataset):
-    def __init__(self, data_dir, image_size, sobel=False):
+    def __init__(self, data_dir, image_size, sobel=False, contrastive=True):
         assert len(image_size) == 2, "image_size must be a tuple of (height, width)"
         self.data_dir = data_dir
         self.image_files = [f for f in os.listdir(data_dir) if os.path.isfile(os.path.join(data_dir, f))]
@@ -61,12 +61,19 @@ class ImageFileDataset(Dataset):
         self.labels_map = {}
         self.num_classes = 0
         self._parse_files()
-        self.transform = T.Compose([
+        self.contrastive = contrastive
+        transforms = [
             DynamicNormalize(),
             ResizeAndPad(image_size),
             SobelFilter() if sobel else lambda x: x,
-
-        ])
+            T.ToTensor(),
+        ]
+        if contrastive:
+            transforms.append(T.RandomResizedCrop(size=image_size, scale=(0.2, 1.)))
+            transforms.append(T.RandomHorizontalFlip())
+            transforms.append(T.RandomRotation(degrees=15))
+            
+        self.transform = T.Compose(transforms)
 
     def _parse_files(self):
         temp_labels = set()
@@ -95,9 +102,10 @@ class ImageFileDataset(Dataset):
         
         img_np = np.array(img)
         
-        img_transformed = self.transform(img_np)
-        # [1, H, W]
-        img_tensor = torch.from_numpy(img_transformed).float().unsqueeze(0)
+        if self.contrastive:
+            img_transformed = (self.transform(img_np), self.transform(img_np))
+        else:
+            img_transformed = self.transform(img_np)
         
         label_idx = self.labels_map[label_str]
-        return img_tensor, label_idx
+        return img_transformed, np.array([label_idx], dtype=np.float32)
