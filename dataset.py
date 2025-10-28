@@ -10,6 +10,26 @@ try:
 except ImportError:
     from PIL import Image
 
+
+
+class Crop2BBox:
+    def __init__(self, threshold=0.6):
+        self.threshold = threshold
+    def __call__(self, img):
+        img = cv2.threshold(img, 0.6, 1, cv2.THRESH_BINARY)[1]
+        
+        img = (img * 255).astype(np.uint8)
+        
+        contours, _ = cv2.findContours(image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        if not contours:
+            print("No white objects found in the image.")
+            return None
+        largest_contour = max(contours, key=cv2.contourArea)
+
+        x, y, w, h = cv2.boundingRect(largest_contour)
+        return img[y:y+h, x:x+w]
+    
 class ResizeAndPad:
     def __init__(self, output_size, fill=0):
         assert len(output_size) == 2, "Output size must be a tuple of (height, width)"
@@ -40,7 +60,7 @@ class SobelFilter:
         magnitude = cv2.convertScaleAbs(mag)
         return magnitude
 
-class DynamicNormalize:
+class Normalize:
     def __call__(self, img):
         img = img.astype(np.float32)
         min_val = np.min(img)
@@ -50,6 +70,11 @@ class DynamicNormalize:
             img = (img - min_val) / (max_val - min_val)
         else:
             img.fill(0)
+        return img
+    
+class Standardize:
+    def __call__(self, img):
+        img = (img - img.mean()) / img.std()
         return img
 
 class ImageFileDataset(Dataset):
@@ -63,8 +88,10 @@ class ImageFileDataset(Dataset):
         self._parse_files()
         self.contrastive = contrastive
         transforms = [
-            DynamicNormalize(),
-            ResizeAndPad(image_size),
+            Normalize(),
+            Standardize(),
+            Crop2BBox(),
+            # ResizeAndPad(image_size),
             SobelFilter() if sobel else lambda x: x,
             T.ToTensor(),
         ]

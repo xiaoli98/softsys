@@ -30,7 +30,8 @@ class ConfigurableCNN(nn.Module):
             layers.append(nn.MaxPool2d(kernel_size=2, stride=2))
             in_channels = current_channels
             current_channels *= 2
-            
+        # to capture every high level feature
+        layers.append(nn.AdaptiveMaxPool2d(output_size=1))
         self.feature_extractor = nn.Sequential(*layers)
         
         # calculate the flattened size
