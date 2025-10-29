@@ -1,8 +1,9 @@
 epochs: 100
-total_samples: 20
-concurrent_trials: 3
+total_samples: 1
+concurrent_trials: 1
 data_dir: "/data/malio/softsys/imgs_data"
-image_size: [4800, 660] #[H,W]
+# image_size: [4800, 660] #[H,W]
+pooling_size: [32, 32]  #[H,W]
 wandb_project_name: "SoftSystem_Image_Grid_Search"
 run_name: "cnn_contrastive"
 

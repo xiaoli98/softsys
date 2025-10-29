@@ -7,7 +7,7 @@ class ConfigurableCNN(nn.Module):
     def __init__(
         self,
         num_classes,
-        img_size,
+        pooling_size,
         in_channels=1,
         depth=3,
         kernel_size=3,
@@ -31,15 +31,17 @@ class ConfigurableCNN(nn.Module):
             in_channels = current_channels
             current_channels *= 2
         # to capture every high level feature
-        layers.append(nn.AdaptiveMaxPool2d(output_size=1))
+        layers.append(nn.AdaptiveMaxPool2d(output_size=pooling_size))
         self.feature_extractor = nn.Sequential(*layers)
         
         # calculate the flattened size
-        with torch.no_grad():
-            dummy_input = torch.randn(1, 1, *img_size)
-            dummy_output = self.feature_extractor(dummy_input)
-            flattened_size = dummy_output.view(1, -1).shape[1]
+        # with torch.no_grad():
+        #     dummy_input = torch.randn(1, 1, *img_size)
+        #     dummy_output = self.feature_extractor(dummy_input)
+        #     flattened_size = dummy_output.view(1, -1).shape[1]
 
+        flattened_size = current_channels // 2 * pooling_size[0] * pooling_size[1]
+        
         self.classifier_backbone = nn.Sequential(
             nn.Flatten(),
             nn.Linear(flattened_size, latent_dim),

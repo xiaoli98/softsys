@@ -20,7 +20,7 @@ class Crop2BBox:
         
         img = (img * 255).astype(np.uint8)
         
-        contours, _ = cv2.findContours(image, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         if not contours:
             print("No white objects found in the image.")
@@ -78,8 +78,8 @@ class Standardize:
         return img
 
 class ImageFileDataset(Dataset):
-    def __init__(self, data_dir, image_size, sobel=False, contrastive=True):
-        assert len(image_size) == 2, "image_size must be a tuple of (height, width)"
+    def __init__(self, data_dir, image_size=None, sobel=False, contrastive=True):
+        # assert len(image_size) == 2, "image_size must be a tuple of (height, width)"
         self.data_dir = data_dir
         self.image_files = [f for f in os.listdir(data_dir) if os.path.isfile(os.path.join(data_dir, f))]
         self.samples = []
@@ -96,7 +96,7 @@ class ImageFileDataset(Dataset):
             T.ToTensor(),
         ]
         if contrastive:
-            transforms.append(T.RandomResizedCrop(size=image_size, scale=(0.2, 1.)))
+            # transforms.append(T.RandomResizedCrop(size=image_size, scale=(0.2, 1.)))
             transforms.append(T.RandomHorizontalFlip())
             transforms.append(T.RandomRotation(degrees=15))
             

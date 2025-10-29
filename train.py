@@ -36,12 +36,12 @@ def show_images(datamodule):
             plt.show()
     input("Press Enter to continue...")
 
-def train_model(config, data_config, epochs, data_dir, image_size, wandb_project_name, run_name):
+def train_model(config, data_config, epochs, data_dir, pooling_size, wandb_project_name, run_name):
     data_config = data_config
     datamodule = ImageDataModule(
         data_dir=data_dir,
         batch_size=config['batch_size'],
-        image_size=tuple(image_size),
+        # image_size=tuple(image_size),
         sobel=data_config.get('sobel', False),
     )
     datamodule.setup(verbose=True, contrastive=config.get('use_contrastive', False)) # for num classes
@@ -50,7 +50,7 @@ def train_model(config, data_config, epochs, data_dir, image_size, wandb_project
         model_config = {
             'name': 'cnn',
             'params': {
-                'img_size': tuple(image_size),
+                'pooling_size': tuple(pooling_size),
                 'depth': config['model_depth'],
                 'kernel_size': config['kernel_size'],
                 'stride': config['stride'],
@@ -82,7 +82,7 @@ def train_model(config, data_config, epochs, data_dir, image_size, wandb_project
         devices="auto",
         log_every_n_steps=10,
         logger=logger,
-        enable_progress_bar=False,
+        enable_progress_bar=True,
         callbacks=[
             TuneReportCheckpointCallback(
                 {
@@ -90,7 +90,7 @@ def train_model(config, data_config, epochs, data_dir, image_size, wandb_project
                     "mean_accuracy": "val_accuracy",
                     "f1_score": "val_f1_score"
                 },
-                save_checkpoints=True,
+                save_checkpoints=False,
                 on="validation_end"
             ),
             L.pytorch.callbacks.ModelCheckpoint(
@@ -137,7 +137,8 @@ def main(config):
         data_config=config.get('dataset', {}),
         epochs=config['epochs'],
         data_dir=config['data_dir'],
-        image_size=config['image_size'],
+        # image_size=config['image_size'],
+        pooling_size=config['pooling_size'],
         wandb_project_name=config['wandb_project_name'],
         run_name=config['run_name']
     )
