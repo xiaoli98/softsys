@@ -11,16 +11,49 @@ except ImportError:
     from PIL import Image
 
 
+class Normalize:
+    def __call__(self, img):
+        img = img.astype(np.float32)
+        min_val = np.min(img)
+        max_val = np.max(img)
+        
+        if max_val > min_val:
+            img = (img - min_val) / (max_val - min_val)
+        else:
+            img.fill(0)
+        return img
 
+class GlobalNormalize:
+    def __init__(self, global_min=0.0, global_max=255.0):
+        self.global_min = global_min
+        self.global_max = global_max
+        
+    def __call__(self, img):
+        img = img.astype(np.float32)
+        img = (img - self.global_min) / (self.global_max - self.global_min)
+        img = np.clip(img, 0.0, 1.0)
+        return img
+    
+class Standardize:
+    def __call__(self, img):
+        img = (img - img.mean()) / img.std()
+        return img
+    
 class Crop2BBox:
     def __init__(self, threshold=0.6):
         self.threshold = threshold
+        self.normalize = Normalize()
+        self.standartize = Standardize()
+        
     def __call__(self, img):
-        img = cv2.threshold(img, 0.6, 1, cv2.THRESH_BINARY)[1]
+        tmp_img = self.normalize(img)
+        tmp_img = self.standartize(tmp_img)
         
-        img = (img * 255).astype(np.uint8)
+        tmp_img = cv2.threshold(tmp_img, 0.6, 1, cv2.THRESH_BINARY)[1]
         
-        contours, _ = cv2.findContours(img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        tmp_img = (tmp_img * 255).astype(np.uint8)
+        
+        contours, _ = cv2.findContours(tmp_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         if not contours:
             print("No white objects found in the image.")
@@ -60,23 +93,6 @@ class SobelFilter:
         magnitude = cv2.convertScaleAbs(mag)
         return magnitude
 
-class Normalize:
-    def __call__(self, img):
-        img = img.astype(np.float32)
-        min_val = np.min(img)
-        max_val = np.max(img)
-        
-        if max_val > min_val:
-            img = (img - min_val) / (max_val - min_val)
-        else:
-            img.fill(0)
-        return img
-    
-class Standardize:
-    def __call__(self, img):
-        img = (img - img.mean()) / img.std()
-        return img
-
 class ImageFileDataset(Dataset):
     def __init__(self, data_dir, image_size=None, sobel=False, contrastive=True):
         # assert len(image_size) == 2, "image_size must be a tuple of (height, width)"
@@ -85,12 +101,16 @@ class ImageFileDataset(Dataset):
         self.samples = []
         self.labels_map = {}
         self.num_classes = 0
+        self.max_val = 0
+        self.min_val = 0
         self._parse_files()
+        
+        self.global_normalize = GlobalNormalize(global_min=self.min_val, global_max=self.max_val)
         self.contrastive = contrastive
         transforms = [
-            Normalize(),
-            Standardize(),
+            # Standardize(),
             Crop2BBox(),
+            self.global_normalize,
             # ResizeAndPad(image_size),
             SobelFilter() if sobel else lambda x: x,
             T.ToTensor(),
@@ -110,6 +130,12 @@ class ImageFileDataset(Dataset):
                 name_code, label_str = base.rsplit('_', 1)
                 self.samples.append((fname, label_str))
                 temp_labels.add(label_str)
+                
+                img = Image.open(os.path.join(self.data_dir, fname))
+                assert img is not None, f"Failed to load image {os.path.join(self.data_dir, fname)}"
+                
+                img_np = np.array(img)
+                self.max_val = max(self.max_val, img_np.max())
             except Exception:
                 print(f"Warning: Skipping file with incorrect format: {fname}")
         sorted_labels = sorted(temp_labels)
